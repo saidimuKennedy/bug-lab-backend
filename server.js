@@ -37,7 +37,7 @@ testConnection()
 
 // Routes
 app.use("/scientists", require("./routes/scientistRoutes"));
-app.use("/bugs", require("./routes/bugRoutes"));
+app.use("/bugs", require("./routes/bugsRoutes"));
 
 // Error handling
 app.use((err, req, res, next) => {
