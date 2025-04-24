@@ -1,26 +1,51 @@
 const express = require("express");
+const compression = require("compression");
+const helmet = require("helmet");
 const cors = require("cors");
-const bugsRoutes = require("./routes/bugsRoutes");
-const scientistRoutes = require("./routes/scientistRoutes");
+const { testConnection } = require("./config/db");
 
 const app = express();
 
-// CORS middleware for routes
+// Production middleware
+app.use(helmet());
+app.use(compression());
+app.use(express.json());
+
+// Configure CORS with specific origin
 app.use(
 	cors({
-		origin: "http://localhost:5173",
-		methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
-		allowedHeaders: ["Content-Type"],
+		origin: [
+			"http://localhost:5173", // Local development
+			"https://your-vercel-domain.vercel.app", // Your Vercel domain
+		],
+		credentials: true,
 	})
 );
 
-app.use(express.json());
+// Test database connection
+testConnection()
+	.then((connected) => {
+		if (!connected) {
+			console.error("Database connection failed");
+			process.exit(1);
+		}
+	})
+	.catch((err) => {
+		console.error("Error testing connection:", err);
+		process.exit(1);
+	});
 
-app.use("/bugs", bugsRoutes);
-app.use("/scientists", scientistRoutes);
+// Routes
+app.use("/scientists", require("./routes/scientistRoutes"));
+app.use("/bugs", require("./routes/bugRoutes"));
+
+// Error handling
+app.use((err, req, res, next) => {
+	console.error(err.stack);
+	res.status(500).json({ error: "Something went wrong!" });
+});
 
 const PORT = process.env.PORT || 3000;
-
 app.listen(PORT, () => {
-	console.log(`Server is running on port ${PORT}`);
+	console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
 });

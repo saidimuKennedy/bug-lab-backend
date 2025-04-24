@@ -1,82 +1,210 @@
-const pool = require("../config/db");
+// Import the pool from your updated db config
+const { pool } = require("../config/db");
 
 const createBug = async (req, res) => {
+	let client;
 	try {
-		// destructer the request body for what we need
+		// Get client from pool
+		client = await pool.connect();
+
+		// Destructure the request body
 		const { name, strength, type } = req.body;
 
-		const result = await pool.query(
+		// Input validation
+		if (!name || !strength || !type) {
+			return res.status(400).json({ error: "Missing required fields" });
+		}
+
+		// Start transaction
+		await client.query("BEGIN");
+
+		const result = await client.query(
 			"INSERT INTO bugs (name, strength, type) VALUES ($1, $2, $3) RETURNING *",
 			[name, strength, type]
 		);
 
-		// return the result to the client
-		res
-			.status(201)
-			.json({ message: "Bug created successfully", bug: result.rows[0] });
+		// Commit transaction
+		await client.query("COMMIT");
+
+		// Return the result to the client
+		res.status(201).json({
+			message: "Bug created successfully",
+			bug: result.rows[0],
+		});
 	} catch (error) {
+		// Rollback on error
+		if (client) await client.query("ROLLBACK");
+
 		console.error("Error creating bug:", error);
-		res.status(500).json({ error: error.message });
+		res.status(500).json({
+			error: "Failed to create bug",
+			details:
+				process.env.NODE_ENV === "development" ? error.message : undefined,
+		});
+	} finally {
+		if (client) client.release();
 	}
 };
 
 const getAllBugs = async (req, res) => {
+	let client;
 	try {
-		const result = await pool.query("SELECT * FROM bugs");
+		client = await pool.connect();
+		const result = await client.query("SELECT * FROM bugs");
 		res.status(200).json(result.rows);
 	} catch (error) {
-		res.status(500).json({ error: error.message });
+		console.error("Error fetching bugs:", error);
+		res.status(500).json({
+			error: "Failed to fetch bugs",
+			details:
+				process.env.NODE_ENV === "development" ? error.message : undefined,
+		});
+	} finally {
+		if (client) client.release();
 	}
 };
 
 const getBugById = async (req, res) => {
+	let client;
 	try {
-		const { id } = req.params; // we need the id from the request params
-		const result = await pool.query("SELECT * FROM bugs WHERE id = $1", [id]); // get the bug by id
-		if (result.rows.length === 0) {
-			return res.status(404).json({ message: "Bug not found" }); // if no bug is found, return 404
+		const { id } = req.params;
+
+		// Validate id is a number
+		if (isNaN(parseInt(id))) {
+			return res.status(400).json({ error: "Invalid bug ID" });
 		}
-		res.status(200).json(result.rows[0]); // return the bug
+
+		client = await pool.connect();
+		const result = await client.query("SELECT * FROM bugs WHERE id = $1", [id]);
+
+		if (result.rows.length === 0) {
+			return res.status(404).json({ message: "Bug not found" });
+		}
+
+		res.status(200).json(result.rows[0]);
 	} catch (error) {
-		res.status(500).json({ error: error.message });
+		console.error("Error fetching bug:", error);
+		res.status(500).json({
+			error: "Failed to fetch bug",
+			details:
+				process.env.NODE_ENV === "development" ? error.message : undefined,
+		});
+	} finally {
+		if (client) client.release();
 	}
 };
 
 const updateBug = async (req, res) => {
+	let client;
 	try {
-		const { id } = req.params; // get the id from the request params
-		const { name, strength, type } = req.body; // destructer the request body for what we need
-		const result = await pool.query(
+		const { id } = req.params;
+		const { name, strength, type } = req.body;
+
+		// Validate id is a number
+		if (isNaN(parseInt(id))) {
+			return res.status(400).json({ error: "Invalid bug ID" });
+		}
+
+		// Validate required fields
+		if (!name || !strength || !type) {
+			return res.status(400).json({ error: "Missing required fields" });
+		}
+
+		client = await pool.connect();
+
+		// Start transaction
+		await client.query("BEGIN");
+
+		// First check if bug exists
+		const bugCheck = await client.query("SELECT id FROM bugs WHERE id = $1", [
+			id,
+		]);
+
+		if (bugCheck.rows.length === 0) {
+			await client.query("ROLLBACK");
+			return res.status(404).json({ message: "Bug not found" });
+		}
+
+		const result = await client.query(
 			"UPDATE bugs SET name = $1, strength = $2, type = $3 WHERE id = $4 RETURNING *",
 			[name, strength, type, id]
-		); // we write inside the query sql statement to update the bug
-		// the $1, $2, $3, $4 are placeholders for the values we pass in the array at the end of the query
-		if (result.rows.length === 0) {
-			return res.status(404).json({ message: "Bug not found" }); // if no bug is found, return 404
-		} // result.rows.length checks if the bug is found or not, call it an iterator
-		res
-			.status(200)
-			.json({ message: "Bug updated successfully", bug: result.rows[0] });
+		);
+
+		// Commit transaction
+		await client.query("COMMIT");
+
+		res.status(200).json({
+			message: "Bug updated successfully",
+			bug: result.rows[0],
+		});
 	} catch (error) {
-		res.status(500).json({ error: error.message });
+		// Rollback on error
+		if (client) await client.query("ROLLBACK");
+
+		console.error("Error updating bug:", error);
+		res.status(500).json({
+			error: "Failed to update bug",
+			details:
+				process.env.NODE_ENV === "development" ? error.message : undefined,
+		});
+	} finally {
+		if (client) client.release();
 	}
 };
 
 const deleteBug = async (req, res) => {
+	let client;
 	try {
-		const { id } = req.params; // get the id from the request params
-		const result = await pool.query(
+		const { id } = req.params;
+
+		// Validate id is a number
+		if (isNaN(parseInt(id))) {
+			return res.status(400).json({ error: "Invalid bug ID" });
+		}
+
+		client = await pool.connect();
+
+		// Start transaction
+		await client.query("BEGIN");
+
+		// Check if bug exists
+		const bugCheck = await client.query("SELECT id FROM bugs WHERE id = $1", [
+			id,
+		]);
+
+		if (bugCheck.rows.length === 0) {
+			await client.query("ROLLBACK");
+			return res.status(404).json({ message: "Bug not found" });
+		}
+
+		// First remove any assignments of this bug to scientists
+		await client.query("DELETE FROM scientist_bugs WHERE bug_id = $1", [id]);
+
+		// Then delete the bug
+		const result = await client.query(
 			"DELETE FROM bugs WHERE id = $1 RETURNING *",
 			[id]
-		); // delete the bug by id
-		if (result.rows.length === 0) {
-			return res.status(404).json({ message: "Bug not found" }); // if no bug is found, return 404
-		}
-		res
-			.status(200)
-			.json({ message: "Bug deleted successfully", bug: result.rows[0] }); // return the bug
+		);
+
+		// Commit transaction
+		await client.query("COMMIT");
+
+		res.status(200).json({
+			message: "Bug deleted successfully",
+			bug: result.rows[0],
+		});
 	} catch (error) {
-		res.status(500).json({ error: error.message });
+		// Rollback on error
+		if (client) await client.query("ROLLBACK");
+
+		console.error("Error deleting bug:", error);
+		res.status(500).json({
+			error: "Failed to delete bug",
+			details:
+				process.env.NODE_ENV === "development" ? error.message : undefined,
+		});
+	} finally {
+		if (client) client.release();
 	}
 };
 
