@@ -15,10 +15,13 @@ app.use(express.json());
 app.use(
 	cors({
 		origin: [
-			"http://localhost:5173", // Local development
-			"https://your-vercel-domain.vercel.app", // Your Vercel domain
+			"http://localhost:5173",
+			"https://bug-lab-frontend-miilfa94w-saidimukennedys-projects.vercel.app",
+			"https://bug-lab-frontend.vercel.app",
 		],
+		methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
 		credentials: true,
+		optionsSuccessStatus: 200,
 	})
 );
 
