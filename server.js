@@ -16,10 +16,12 @@ app.use(
 	cors({
 		origin: [
 			"http://localhost:5173",
-			"https://bug-lab-frontend-miilfa94w-saidimukennedys-projects.vercel.app",
 			"https://bug-lab-frontend.vercel.app",
+			"https://bug-lab-frontend-git-main.vercel.app",
+			"https://bug-lab-frontend-*.vercel.app",
 		],
-		methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
+		methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+		allowedHeaders: ["Content-Type", "Authorization"],
 		credentials: true,
 		optionsSuccessStatus: 200,
 	})
