@@ -14,7 +14,11 @@ app.use(express.json());
 // Configure CORS with specific origin
 app.use(
 	cors({
-		origin: ["http://localhost:5173", "https://bug-lab-frontend.vercel.app"],
+		origin: [
+			"http://localhost:5173",
+			"https://bug-lab-frontend.vercel.app",
+			"https://bug-lab-frontend-1qz449m3d-saidimukennedys-projects.vercel.app",
+		],
 		methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
 		allowedHeaders: ["Content-Type"],
 		optionsSuccessStatus: 204,
