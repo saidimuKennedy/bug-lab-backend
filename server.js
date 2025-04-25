@@ -20,7 +20,7 @@ app.use(
 			"https://bug-lab-frontend-1qz449m3d-saidimukennedys-projects.vercel.app",
 		],
 		methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-		allowedHeaders: ["Content-Type"],
+		allowedHeaders: ["Content-Type", "Authorization"],
 		optionsSuccessStatus: 204,
 		credentials: false,
 	})
