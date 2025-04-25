@@ -18,12 +18,11 @@ app.use(
 			"http://localhost:5173",
 			"https://bug-lab-frontend.vercel.app",
 			"https://bug-lab-frontend-git-main.vercel.app",
-			"https://bug-lab-frontend-*.vercel.app",
 		],
-		methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-		allowedHeaders: ["Content-Type", "Authorization"],
-		credentials: true,
+		methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+		allowedHeaders: ["Content-Type"],
 		optionsSuccessStatus: 200,
+		credentials: false,
 	})
 );
 
