@@ -33,7 +33,7 @@ const pool = new Pool(
 		  }
 );
 
-// Event handlers for the pool
+
 pool.on("connect", () => {
 	console.log("Database connection established");
 });
@@ -47,7 +47,7 @@ pool.on("error", (err) => {
 const testConnection = async () => {
 	try {
 		const client = await pool.connect();
-		const result = await client.query("SELECT NOW()");
+		const result = await client.query("SELECT NOW()");// what does this do?
 		client.release();
 		console.log("Database connection test successful:", result.rows[0]);
 		return true;
