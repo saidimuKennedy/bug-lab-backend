@@ -1,8 +1,6 @@
-// db.js
 const { Pool } = require("pg");
 require("dotenv").config();
 
-// Create connection pool with DATABASE_URL or individual params
 const pool = new Pool(
 	process.env.DATABASE_URL
 		? {

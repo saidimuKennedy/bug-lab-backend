@@ -15,7 +15,7 @@ router.get("/", getAllScientists);
 router.patch("/:id", updateScientist);
 router.delete("/:id/delete", deleteScientist);
 router.post("/:id/assign", assignBug);
-router.post("/:id/unassign", unassignBug); // Uses :id instead of :scientistId
+router.post("/:id/unassign", unassignBug); 
 router.get("/:id/bugs", getScientistBugs);
 
 module.exports = router;

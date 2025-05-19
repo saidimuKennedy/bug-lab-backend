@@ -16,7 +16,4 @@ router.post("/login", loginUser);
 router.post("/logout", logoutUser);
 router.post("/register", registerUser);
 
-// You would add other auth routes here (signup, social login redirects)
-// router.post("/register", registerUser);
-
 module.exports = router;
