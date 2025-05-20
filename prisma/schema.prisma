@@ -1,0 +1,86 @@
+// prisma/schema.prisma
+
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  // Ensures Prisma maps model names to their original table names if different,
+  // especially useful for existing databases or when using specific naming conventions.
+}
+
+// ----------------------------------------------------
+// Models corresponding to your existing PostgreSQL tables
+// ----------------------------------------------------
+
+// User Model (from your public.users table)
+model User {
+  id              Int       @id @default(autoincrement()) // SERIAL PRIMARY KEY
+  email           String    @unique // VARCHAR(255) UNIQUE NOT NULL
+  hashed_password String    // VARCHAR(255) NOT NULL
+  created_at      DateTime  @default(now()) @map("created_at") // TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+
+  // Relationship to Scientist: A User can have one Scientist profile
+  // The 'user' field in Scientist model points back to this User.
+  // The relation allows fetching the associated scientist from a user.
+  scientist       Scientist? // A user might not have a scientist profile yet (e.g., if you only create user accounts)
+
+  @@map("users") // Map this model to the 'users' table in public schema
+}
+
+// Scientist Model (from your public.scientist table)
+model Scientist {
+  id        Int       @id @default(autoincrement()) // SERIAL PRIMARY KEY
+  name      String    // VARCHAR(255) NOT NULL
+  email     String    @unique // VARCHAR(255) UNIQUE NOT NULL (if you have this unique constraint)
+  contact   String?   // VARCHAR(255) NULL (if exists)
+  user_id   Int?      @unique @map("user_id") // INTEGER UNIQUE NULL (or NOT NULL if enforced) - Foreign Key to User
+  created_at DateTime @default(now()) @map("created_at") // TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+
+  // Relationship to User: A Scientist belongs to one User
+  // 'fields: [user_id]' specifies the foreign key column.
+  // 'references: [id]' specifies the primary key in the User model.
+  // '@relation(fields: [user_id], references: [id], onDelete: Cascade)'
+  // This means if a User is deleted, the associated Scientist is also deleted.
+  user      User?     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  // Relationship to Bugs: A Scientist can have many Bugs (Many-to-Many through ScientistBug)
+  scientistBugs ScientistBug[]
+
+  @@map("scientist") // Map this model to the 'scientist' table in public schema
+}
+
+// Bug Model (from your public.bugs table)
+model Bug {
+  id        Int       @id @default(autoincrement()) // SERIAL PRIMARY KEY
+  name      String    // VARCHAR(255) NOT NULL
+  strength  Int       // INT NOT NULL
+  type      String    // VARCHAR(255) NOT NULL
+  created_at DateTime @default(now()) @map("created_at") // TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+
+  // Relationship to Scientists: A Bug can be assigned to many Scientists (Many-to-Many through ScientistBug)
+  scientistBugs ScientistBug[]
+
+  @@map("bugs") // Map this model to the 'bugs' table in public schema
+}
+
+// ScientistBug Model (from your public.scientist_bugs join table)
+// This is the explicit many-to-many join table.
+model ScientistBug {
+  scientist_id Int @map("scientist_id") // INTEGER NOT NULL, Foreign Key to Scientist
+  bug_id       Int @map("bug_id")       // INTEGER NOT NULL, Foreign Key to Bug
+
+  // Define the compound primary key for the join table
+  @@id([scientist_id, bug_id])
+
+  // Relationships back to Scientist and Bug models
+  scientist    Scientist @relation(fields: [scientist_id], references: [id], onDelete: Cascade)
+  bug          Bug       @relation(fields: [bug_id], references: [id], onDelete: Cascade)
+
+  @@map("scientist_bugs") // Map this model to the 'scientist_bugs' table in public schema
+}

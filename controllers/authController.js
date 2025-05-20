@@ -1,44 +1,6 @@
 const bcrypt = require("bcrypt");
-const { pool } = require("../config/db");
-
-async function findUserById(userId) {
-  try {
-    const result = await pool.query(
-      "SELECT u.id, u.email, u.hashed_password, s.name AS scientist_name FROM public.users u LEFT JOIN public.scientist s ON u.id = s.user_id WHERE u.id = $1",
-      [userId]
-    );
-    if (result.rows.length > 0) {
-      const user = result.rows[0];
-      return {
-        id: user.id,
-        email: user.email,
-        hashed_password: user.hashed_password,
-        name: user.scientist_name || user.email,
-      };
-    } else {
-      return null;
-    }
-  } catch (err) {
-    throw err;
-  }
-}
-
-async function findUserByEmail(email) {
-  try {
-    const result = await pool.query(
-      "SELECT id, email, hashed_password FROM public.users WHERE email = $1",
-      [email]
-    );
-    if (result.rows.length > 0) {
-      const user = result.rows[0];
-      return user;
-    } else {
-      return null;
-    }
-  } catch (err) {
-    throw err;
-  }
-}
+const { findUserByEmail, findUserById } = require("../services/users");
+const prisma = require("../config/prismaClient");
 
 const authenticate = async (req, res, next) => {
   if (req.session && req.session.userId) {
@@ -137,56 +99,57 @@ const registerUser = async (req, res) => {
   }
 
   try {
-    const existingUser = await findUserByEmail(email);
-    if (existingUser) {
-      return res
-        .status(409)
-        .json({ message: "User with this email already exists" });
-    }
-
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-
-      const userResult = await client.query(
-        "INSERT INTO public.users (email, hashed_password) VALUES ($1, $2) RETURNING id, email",
-        [email, hashedPassword]
-      );
-      const newUser = userResult.rows[0];
-
-      const scientistResult = await client.query(
-        "INSERT INTO public.scientist (name, email, user_id) VALUES ($1, $2, $3) RETURNING id, name",
-        [name, email, newUser.id]
-      );
-      const newScientist = scientistResult.rows[0];
-
-      await client.query("COMMIT");
-      res.status(201).json({
-        id: newUser.id,
-        email: newUser.email,
-        name: newScientist.name,
+    const newUserAndScientist = await prisma.$transaction(async (tx) => {
+      const existingUser = await tx.user.findUnique({
+        where: { email: email },
       });
-    } catch (transactionError) {
-      await client.query("ROLLBACK");
-      console.error(
-        "Transaction failed during registration:",
-        transactionError
-      );
-
-      if (transactionError.constraint === "scientist_email_key") {
-        return res.status(409).json({
-          message: "Scientist profile with this email already exists",
-        });
+      if (existingUser) {
+        throw new Error("User with this email already exists");
       }
-      throw transactionError;
-    } finally {
-      client.release();
-    }
+
+      const newUser = await tx.user.create({
+        data: {
+          email,
+          hashed_password: hashedPassword,
+        },
+        select: { id: true, email: true },
+      });
+
+      const newScientist = await tx.scientist.create({
+        data: {
+          name,
+          email,
+          user: {
+            connect: { id: newUser.id },
+          },
+        },
+        select: { id: true, name: true },
+      });
+      return { newUser, newScientist };
+    });
+
+    res.status(201).json({
+      id: newUserAndScientist.newUser.id,
+      email: newUserAndScientist.newUser.email,
+      name: newUserAndScientist.newScientist.name,
+    });
   } catch (err) {
     console.error("Error in registration controller:", err);
+    if (err.message === "User with this email already exists") {
+      return res.status(409).json({ message: err.message });
+    }
+    if (err.code === "P2002") {
+      // Prisma's unique constraint violation error code
+      if (err.meta.target.includes("email")) {
+        // Check which unique constraint was violated
+        return res
+          .status(409)
+          .json({ message: "A profile with this email already exists" });
+      }
+    }
     res.status(500).json({ message: "Server error during registration" });
   }
 };

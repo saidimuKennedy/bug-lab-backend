@@ -1,12 +1,10 @@
-const { pool } = require("../config/db");
+const prisma = require("../config/prismaClient");
 const bcrypt = require("bcrypt");
 
 const SALT_ROUNDS = 10;
 
 const registerScientist = async (req, res) => {
-  let client;
   try {
-    client = await pool.connect();
     const { name, email, password } = req.body;
 
     if (!name || !email || !password) {
@@ -15,76 +13,67 @@ const registerScientist = async (req, res) => {
       });
     }
 
-    await client.query("BEGIN");
-
-    const existingUserCheck = await client.query(
-      "SELECT id FROM public.users WHERE email = $1",
-      [email]
-    );
-    if (existingUserCheck.rows.length > 0) {
-      await client.query("ROLLBACK");
-      return res
-        .status(409)
-        .json({ error: "User with this email already exists" });
-    }
-
     const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
-    console.log("Password hashed successfully for registration.");
 
-    const userResult = await client.query(
-      "INSERT INTO public.users (email, hashed_password) VALUES ($1, $2) RETURNING id, email",
-      [email, hashedPassword]
-    );
-    const newUser = userResult.rows[0];
-    console.log("New user inserted:", newUser.email, "ID:", newUser.id);
+    const newScientist = await prisma.$transaction(async (tx) => {
+      const existingUser = await tx.user.findUnique({
+        where: { email: email },
+      });
+      if (existingUser) {
+        throw new Error("User with this email already exists");
+      }
 
-    const scientistResult = await client.query(
-      "INSERT INTO public.scientist (name, email, user_id) VALUES ($1, $2, $3) RETURNING id, name, email, created_at, user_id",
-      [name, email, newUser.id]
-    );
-    const newScientist = scientistResult.rows[0];
-    console.log(
-      "Linked scientist profile created:",
-      newScientist.name,
-      "ID:",
-      newScientist.id,
-      "Linked User ID:",
-      newScientist.user_id
-    );
+      const newUser = await tx.user.create({
+        data: {
+          email,
+          hashed_password: hashedPassword,
+        },
+        select: { id: true, email: true },
+      });
 
-    await client.query("COMMIT");
+      const scientist = await tx.scientist.create({
+        data: {
+          name,
+          email,
+          user: {
+            connect: { id: newUser.id },
+          },
+        },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          created_at: true,
+          user_id: true,
+        },
+      });
+      return { newUser, scientist };
+    });
 
     res.status(201).json({
       message: "Scientist and User registered successfully",
       scientist: {
-        id: newScientist.id,
-        name: newScientist.name,
-        email: newScientist.email,
-        user_id: newScientist.user_id,
-        created_at: newScientist.created_at,
+        id: newScientist.scientist.id,
+        name: newScientist.scientist.name,
+        email: newScientist.scientist.email,
+        user_id: newScientist.scientist.user_id,
+        created_at: newScientist.scientist.created_at,
       },
-      user_id: newUser.id,
+      user_id: newScientist.newUser.id,
     });
   } catch (error) {
-    if (client) {
-      try {
-        await client.query("ROLLBACK");
-      } catch (rollbackError) {
-        console.error("Error during transaction rollback:", rollbackError);
-      }
-    }
-
     console.error("Error registering scientist:", error);
 
-    if (error.code === "23505" && error.constraint === "users_email_key") {
-      return res
-        .status(409)
-        .json({ error: "User with this email already exists" });
+    if (error.message === "User with this email already exists") {
+      return res.status(409).json({ error: error.message });
     }
-    if (error.code === "23505" && error.constraint === "scientist_email_key") {
-      return res
-        .status(409)
-        .json({ error: "Scientist with this email already exists" });
+    if (error.code === "P2002") {
+      // Prisma's unique constraint violation error code
+      if (error.meta.target.includes("email")) {
+        return res
+          .status(409)
+          .json({ error: "Scientist with this email already exists" });
+      }
     }
 
     res.status(500).json({
@@ -92,36 +81,40 @@ const registerScientist = async (req, res) => {
       details:
         process.env.NODE_ENV === "development" ? error.message : undefined,
     });
-  } finally {
-    if (client) {
-      client.release();
-    }
   }
 };
 
 const getAllScientists = async (req, res) => {
-  let client;
   try {
-    client = await pool.connect();
+    const scientists = await prisma.scientist.findMany({
+      include: {
+        scientistBugs: {
+          include: {
+            bug: true,
+          },
+        },
+      },
+      orderBy: {
+        id: "asc",
+      },
+    });
 
-    const result = await client.query(`
-            SELECT
-                s.id,
-                s.name,
-                s.email,
-                s.created_at,
-                s.user_id,
-                COALESCE(
-                    (SELECT json_agg(b.*)
-                    FROM bugs b
-                    INNER JOIN scientist_bugs sb ON b.id = sb.bug_id
-                    WHERE sb.scientist_id = s.id),
-                    '[]'
-                ) as bugs
-            FROM public.scientist s
-        `);
+    const formattedScientists = scientists.map((scientist) => ({
+      id: scientist.id,
+      name: scientist.name,
+      email: scientist.email,
+      created_at: scientist.created_at,
+      user_id: scientist.user_id,
+      bugs: scientist.scientistBugs.map((sb) => ({
+        id: sb.bug.id,
+        name: sb.bug.name,
+        strength: sb.bug.strength,
+        type: sb.bug.type,
+        created_at: sb.bug.created_at,
+      })),
+    }));
 
-    res.json(result.rows);
+    res.json(formattedScientists);
   } catch (error) {
     console.error("Error fetching scientists:", error);
     res.status(500).json({
@@ -129,13 +122,10 @@ const getAllScientists = async (req, res) => {
       details:
         process.env.NODE_ENV === "development" ? error.message : undefined,
     });
-  } finally {
-    if (client) client.release();
   }
 };
 
 const assignBug = async (req, res) => {
-  let client;
   try {
     const { id } = req.params;
     const { bug_id } = req.body;
@@ -144,100 +134,102 @@ const assignBug = async (req, res) => {
       return res.status(400).json({ error: "Missing required parameters" });
     }
 
-    if (isNaN(parseInt(id)) || isNaN(parseInt(bug_id))) {
+    const scientistId = parseInt(id);
+    const parsedBugId = parseInt(bug_id);
+
+    if (isNaN(scientistId) || isNaN(parsedBugId)) {
       return res.status(400).json({ error: "Invalid ID format" });
     }
 
-    client = await pool.connect();
-
-    await client.query("BEGIN");
-
-    const scientistCheck = await client.query(
-      "SELECT id FROM public.scientist WHERE id = $1",
-      [id]
-    );
-
-    if (scientistCheck.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Scientist not found" });
-    }
-
-    const bugCheck = await client.query(
-      "SELECT id FROM public.bugs WHERE id = $1",
-      [bug_id]
-    );
-
-    if (bugCheck.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Bug not found" });
-    }
-
-    const existingAssignment = await client.query(
-      "SELECT * FROM public.scientist_bugs WHERE scientist_id = $1 AND bug_id = $2",
-      [id, bug_id]
-    );
-
-    if (existingAssignment.rows.length > 0) {
-      await client.query("ROLLBACK");
-      return res.status(409).json({
-        error: "This bug is already assigned to this scientist",
+    const newAssignment = await prisma.$transaction(async (tx) => {
+      const scientist = await tx.scientist.findUnique({
+        where: { id: scientistId },
       });
-    }
-
-    const result = await client.query(
-      "INSERT INTO public.scientist_bugs (scientist_id, bug_id) VALUES ($1, $2) RETURNING *",
-      [id, bug_id]
-    );
-
-    await client.query("COMMIT");
-
-    res.status(201).json(result.rows[0]);
-  } catch (error) {
-    if (client) {
-      try {
-        await client.query("ROLLBACK");
-      } catch (rollbackError) {
-        console.error("Error during transaction rollback:", rollbackError);
+      if (!scientist) {
+        throw new Error("Scientist not found");
       }
-    }
 
+      const bug = await tx.bug.findUnique({ where: { id: parsedBugId } });
+      if (!bug) {
+        throw new Error("Bug not found");
+      }
+
+      const existingAssignment = await tx.scientistBug.findUnique({
+        where: {
+          scientist_id_bug_id: {
+            // Compound primary key for unique check
+            scientist_id: scientistId,
+            bug_id: parsedBugId,
+          },
+        },
+      });
+
+      if (existingAssignment) {
+        throw new Error("This bug is already assigned to this scientist");
+      }
+
+      const result = await tx.scientistBug.create({
+        data: {
+          scientist_id: scientistId,
+          bug_id: parsedBugId,
+        },
+      });
+      return result;
+    });
+
+    res.status(201).json(newAssignment);
+  } catch (error) {
     console.error("Error assigning bug:", error);
+    if (
+      error.message === "Scientist not found" ||
+      error.message === "Bug not found"
+    ) {
+      return res.status(404).json({ error: error.message });
+    }
+    if (error.message === "This bug is already assigned to this scientist") {
+      return res.status(409).json({ error: error.message });
+    }
     res.status(500).json({
       error: "Failed to assign bug",
       details:
         process.env.NODE_ENV === "development" ? error.message : undefined,
     });
-  } finally {
-    if (client) client.release();
   }
 };
 
 const getScientistBugs = async (req, res) => {
-  let client;
   try {
     const { id } = req.params;
+    const scientistId = parseInt(id);
 
-    if (isNaN(parseInt(id))) {
+    if (isNaN(scientistId)) {
       return res.status(400).json({ error: "Invalid scientist ID" });
     }
 
-    client = await pool.connect();
+    const scientistWithBugs = await prisma.scientist.findUnique({
+      where: { id: scientistId },
+      include: {
+        scientistBugs: {
+          include: {
+            bug: true,
+          },
+        },
+      },
+    });
 
-    const scientistCheck = await client.query(
-      "SELECT id FROM public.scientist WHERE id = $1",
-      [id]
-    );
-
-    if (scientistCheck.rows.length === 0) {
+    if (!scientistWithBugs) {
       return res.status(404).json({ error: "Scientist not found" });
     }
 
-    const result = await client.query(
-      "SELECT b.* FROM public.bugs b JOIN public.scientist_bugs sb ON b.id = sb.bug_id WHERE sb.scientist_id = $1",
-      [id]
-    );
+    const bugs = scientistWithBugs.scientistBugs.map((sb) => ({
+      id: sb.bug.id,
+      name: sb.bug.name,
+      strength: sb.bug.strength,
+      type: sb.bug.type,
+      created_at: sb.bug.created_at,
+    }));
 
-    res.json(result.rows);
+    res.json(bugs);
   } catch (error) {
     console.error("Error fetching scientist bugs:", error);
     res.status(500).json({
@@ -245,92 +237,71 @@ const getScientistBugs = async (req, res) => {
       details:
         process.env.NODE_ENV === "development" ? error.message : undefined,
     });
-  } finally {
-    if (client) client.release();
   }
 };
 
 const deleteScientist = async (req, res) => {
-  let client;
   try {
     const { id } = req.params;
+    const scientistId = parseInt(id);
 
-    if (isNaN(parseInt(id))) {
+    if (isNaN(scientistId)) {
       return res.status(400).json({ error: "Invalid scientist ID" });
     }
 
-    client = await pool.connect();
-    await client.query("BEGIN");
+    const deletedScientist = await prisma.$transaction(async (tx) => {
+      const scientistToDelete = await tx.scientist.findUnique({
+        where: { id: scientistId },
+        select: { user_id: true },
+      });
 
-    const scientistToDeleteCheck = await client.query(
-      "SELECT user_id FROM public.scientist WHERE id = $1",
-      [id]
-    );
+      if (!scientistToDelete) {
+        throw new Error("Scientist not found");
+      }
 
-    if (scientistToDeleteCheck.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Scientist not found" });
+      const deletedScientistResult = await tx.scientist.delete({
+        where: { id: scientistId },
+        select: { id: true, name: true, email: true, created_at: true },
+      });
+
+      if (scientistToDelete.user_id !== null) {
+        await tx.user.delete({
+          where: { id: scientistToDelete.user_id },
+        });
+      }
+      return deletedScientistResult;
+    });
+
+    res.json({
+      message: "Scientist and linked user (if any) deleted successfully",
+      deleted: deletedScientist,
+    });
+  } catch (error) {
+    console.error("Error deleting scientist:", error);
+    if (error.message === "Scientist not found") {
+      return res.status(404).json({ error: error.message });
     }
-
-    const userIdToDelete = scientistToDeleteCheck.rows[0].user_id;
-
-    const result = await client.query(
-      "DELETE FROM public.scientist WHERE id = $1 RETURNING id, name, email, created_at",
-      [id]
-    );
-
-    if (result.rows.length === 0) {
-      await client.query("ROLLBACK");
+    if (error.code === "P2025") {
+      // Catches not found if the delete operation itself fails
       return res
         .status(404)
         .json({ error: "Scientist not found during deletion" });
     }
-
-    if (userIdToDelete !== null) {
-      await client.query("DELETE FROM public.users WHERE id = $1", [
-        userIdToDelete,
-      ]);
-      console.log(
-        "Deleted linked user with ID:",
-        userIdToDelete,
-        "for scientist ID:",
-        id
-      );
-    }
-
-    await client.query("COMMIT");
-
-    res.json({
-      message: "Scientist and linked user (if any) deleted successfully",
-      deleted: result.rows[0],
-    });
-  } catch (error) {
-    if (client) {
-      try {
-        await client.query("ROLLBACK");
-      } catch (rollbackError) {
-        console.error("Error during transaction rollback:", rollbackError);
-      }
-    }
-
-    console.error("Error deleting scientist:", error);
     res.status(500).json({
       error: "Failed to delete scientist",
       details:
         process.env.NODE_ENV === "development" ? error.message : undefined,
     });
-  } finally {
-    if (client) client.release();
   }
 };
 
 const updateScientist = async (req, res) => {
-  let client;
   try {
     const { id } = req.params;
     const { name, email, password } = req.body;
+    const scientistId = parseInt(id);
 
-    if (isNaN(parseInt(id))) {
+    if (isNaN(scientistId)) {
       return res.status(400).json({ error: "Invalid scientist ID" });
     }
 
@@ -338,81 +309,51 @@ const updateScientist = async (req, res) => {
       return res.status(400).json({ error: "Name and email are required" });
     }
 
-    client = await pool.connect();
-    await client.query("BEGIN");
+    const updatedScientist = await prisma.$transaction(async (tx) => {
+      const scientistToUpdate = await tx.scientist.findUnique({
+        where: { id: scientistId },
+        select: { id: true, user_id: true, email: true },
+      });
 
-    const scientistCheck = await client.query(
-      "SELECT id, user_id, email FROM public.scientist WHERE id = $1",
-      [id]
-    );
-
-    if (scientistCheck.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Scientist not found" });
-    }
-
-    const scientistToUpdate = scientistCheck.rows[0];
-    const userId = scientistToUpdate.user_id;
-
-    if (email && email !== scientistToUpdate.email) {
-      const emailCheck = await client.query(
-        "SELECT id FROM public.scientist WHERE email = $1 AND id != $2",
-        [email, id]
-      );
-      if (emailCheck.rows.length > 0) {
-        await client.query("ROLLBACK");
-        return res
-          .status(409)
-          .json({ error: "Scientist with this email already exists" });
+      if (!scientistToUpdate) {
+        throw new Error("Scientist not found");
       }
-    }
 
-    if (password) {
-      console.log("Password provided for update.");
-      if (userId === null) {
-        console.log(
-          "Cannot update password: Scientist ID",
-          id,
-          "is not linked to a user."
-        );
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          error: "Cannot update password for a scientist not linked to a user.",
+      if (email && email !== scientistToUpdate.email) {
+        const emailCheck = await tx.scientist.findUnique({
+          where: { email: email },
+        });
+        if (emailCheck && emailCheck.id !== scientistId) {
+          throw new Error("Scientist with this email already exists");
+        }
+      }
+
+      if (password) {
+        if (scientistToUpdate.user_id === null) {
+          throw new Error(
+            "Cannot update password for a scientist not linked to a user."
+          );
+        }
+        const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+        await tx.user.update({
+          where: { id: scientistToUpdate.user_id },
+          data: { hashed_password: hashedPassword },
         });
       }
 
-      console.log("Updating password for linked user ID:", userId);
-      const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
-
-      const userUpdateResult = await client.query(
-        "UPDATE public.users SET hashed_password = $1 WHERE id = $2",
-        [hashedPassword, userId]
-      );
-
-      if (userUpdateResult.rowCount === 0) {
-        console.error(
-          "Linked user not found during password update for scientist ID:",
-          id,
-          "User ID:",
-          userId
-        );
-        await client.query("ROLLBACK");
-        return res
-          .status(500)
-          .json({ error: "Internal error: Linked user not found." });
-      }
-      console.log("Password updated for user ID:", userId);
-    } else {
-      console.log("No new password provided for scientist update.");
-    }
-
-    const scientistUpdateResult = await client.query(
-      "UPDATE public.scientist SET name = $1, email = $2 WHERE id = $3 RETURNING id, name, email, created_at, user_id",
-      [name, email, id]
-    );
-    const updatedScientist = scientistUpdateResult.rows[0];
-
-    await client.query("COMMIT");
+      const result = await tx.scientist.update({
+        where: { id: scientistId },
+        data: { name, email },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          created_at: true,
+          user_id: true,
+        },
+      });
+      return result;
+    });
 
     res.json({
       message: "Scientist updated successfully",
@@ -425,27 +366,12 @@ const updateScientist = async (req, res) => {
       },
     });
   } catch (error) {
-    if (client) {
-      try {
-        await client.query("ROLLBACK");
-      } catch (rollbackError) {
-        console.error("Error during transaction rollback:", rollbackError);
-      }
-    }
-
     console.error("Error updating scientist:", error);
-
-    if (error.code === "42703") {
-      return res.status(500).json({
-        error: "Database error: Column not found.",
-        details:
-          process.env.NODE_ENV === "development" ? error.message : undefined,
-      });
+    if (error.message === "Scientist not found") {
+      return res.status(404).json({ error: error.message });
     }
-    if (error.constraint === "scientist_email_key") {
-      return res
-        .status(409)
-        .json({ error: "Scientist with this email already exists" });
+    if (error.message === "Scientist with this email already exists") {
+      return res.status(409).json({ error: error.message });
     }
     if (
       error.message ===
@@ -453,21 +379,19 @@ const updateScientist = async (req, res) => {
     ) {
       return res.status(400).json({ error: error.message });
     }
-
+    if (error.code === "P2025") {
+      // Catches not found if the update operation itself fails
+      return res.status(404).json({ error: "Scientist not found" });
+    }
     res.status(500).json({
       error: "Failed to update scientist",
       details:
         process.env.NODE_ENV === "development" ? error.message : undefined,
     });
-  } finally {
-    if (client) {
-      client.release();
-    }
   }
 };
 
 const unassignBug = async (req, res) => {
-  let client;
   try {
     const { id } = req.params;
     const { bug_id } = req.body;
@@ -476,85 +400,77 @@ const unassignBug = async (req, res) => {
       return res.status(400).json({ error: "Missing required parameters" });
     }
 
-    if (isNaN(parseInt(id)) || isNaN(parseInt(bug_id))) {
+    const scientistId = parseInt(id);
+    const parsedBugId = parseInt(bug_id);
+
+    if (isNaN(scientistId) || isNaN(parsedBugId)) {
       return res.status(400).json({ error: "Invalid ID format" });
     }
 
-    client = await pool.connect();
-
-    await client.query("BEGIN");
-
-    const scientistCheck = await client.query(
-      "SELECT id FROM public.scientist WHERE id = $1",
-      [id]
-    );
-
-    if (scientistCheck.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Scientist not found" });
-    }
-
-    const bugCheck = await client.query(
-      "SELECT id FROM public.bugs WHERE id = $1",
-      [bug_id]
-    );
-
-    if (bugCheck.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Bug not found" });
-    }
-
-    const existingAssignment = await client.query(
-      "SELECT id FROM public.scientist_bugs WHERE scientist_id = $1 AND bug_id = $2",
-      [id, bug_id]
-    );
-
-    if (existingAssignment.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(409).json({
-        error: "This bug is not assigned to this scientist",
+    const deletedAssignment = await prisma.$transaction(async (tx) => {
+      const scientist = await tx.scientist.findUnique({
+        where: { id: scientistId },
       });
-    }
+      if (!scientist) {
+        throw new Error("Scientist not found");
+      }
 
-    const result = await client.query(
-      "DELETE FROM public.scientist_bugs WHERE scientist_id = $1 AND bug_id = $2 RETURNING *",
-      [id, bug_id]
-    );
+      const bug = await tx.bug.findUnique({ where: { id: parsedBugId } });
+      if (!bug) {
+        throw new Error("Bug not found");
+      }
 
-    if (result.rowCount === 0) {
-      console.error(
-        "Delete failed after existence check for scientist:",
-        id,
-        "bug:",
-        bug_id
-      );
-      await client.query("ROLLBACK");
-      return res.status(500).json({ error: "Failed to delete assignment." });
-    }
+      const existingAssignment = await tx.scientistBug.findUnique({
+        where: {
+          scientist_id_bug_id: {
+            // Compound primary key
+            scientist_id: scientistId,
+            bug_id: parsedBugId,
+          },
+        },
+      });
 
-    await client.query("COMMIT");
+      if (!existingAssignment) {
+        throw new Error("This bug is not assigned to this scientist");
+      }
+
+      const result = await tx.scientistBug.delete({
+        where: {
+          scientist_id_bug_id: {
+            scientist_id: scientistId,
+            bug_id: parsedBugId,
+          },
+        },
+      });
+      return result;
+    });
 
     res.status(200).json({
       message: "Bug unassigned successfully",
-      unassigned: result.rows[0],
+      unassigned: deletedAssignment,
     });
   } catch (error) {
-    if (client) {
-      try {
-        await client.query("ROLLBACK");
-      } catch (rollbackError) {
-        console.error("Error during transaction rollback:", rollbackError);
-      }
-    }
-
     console.error("Error unassigning bug:", error);
+    if (
+      error.message === "Scientist not found" ||
+      error.message === "Bug not found"
+    ) {
+      return res.status(404).json({ error: error.message });
+    }
+    if (error.message === "This bug is not assigned to this scientist") {
+      return res.status(409).json({ error: error.message });
+    }
+    if (error.code === "P2025") {
+      // Catches not found if the delete operation itself fails (e.g., race condition)
+      return res
+        .status(404)
+        .json({ error: "Assignment not found during deletion" });
+    }
     res.status(500).json({
       error: "Failed to unassign bug",
       details:
         process.env.NODE_ENV === "development" ? error.message : undefined,
     });
-  } finally {
-    if (client) client.release();
   }
 };
 
